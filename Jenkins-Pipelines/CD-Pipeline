@@ -1,0 +1,35 @@
+pipeline {
+    agent any
+
+    stages {
+        stage('Code Checkout') {
+            steps {
+                git branch: 'master',
+                    url: 'https://github.com/Shivasai-21/dockerwebapp.git'
+            }
+        }
+
+        stage('Deploy') {
+            steps {
+                withKubeCredentials(kubectlCredentials: [[
+                    clusterName: 'EKS-1',
+                    credentialsId: 'k8s',
+                    namespace: 'webapps',
+                    serverUrl: 'https://XXXXXXXXXXXXXXXXXXXXXX.gr7.ap-south-1.eks.amazonaws.com' // provide actual endpoint
+                ]]) {
+                    sh 'kubectl apply -f manifests/ -n webapps --validate=false'
+                    sh 'kubectl apply -f manifests/ -n webapps'
+                }
+            }
+        }
+    }
+
+    post {
+        success {
+            echo 'CD-Pipeline completed successfully.'
+        }
+        failure {
+            echo 'CD-Pipeline failed. Check Console Output for the first error.'
+        }
+    }
+}
