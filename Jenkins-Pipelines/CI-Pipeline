@@ -1,0 +1,166 @@
+
+pipeline {
+    agent any
+
+    tools {
+        maven 'mymaven'
+    }
+
+    environment {
+        DOCKER_IMAGE = 'shivasai21/k8seksproject01'
+        DOCKER_TAG   = "${BUILD_NUMBER}"
+    }
+
+    stages {
+
+        stage('Clean Workspace') {
+            steps {
+                cleanWs()
+            }
+        }
+
+        stage('Code Checkout') {
+            steps {
+                git branch: 'master',
+                    url: 'https://github.com/Shivasai-21/dockerwebapp.git'
+            }
+        }
+
+        stage('Maven Build') {
+            steps {
+                sh 'mvn clean install'
+            }
+        }
+
+        stage('Code Quality Analysis') {
+            steps {
+                withSonarQubeEnv('mysonar') {
+                    sh '''
+                        mvn sonar:sonar \
+                            -Dsonar.projectKey=MyProject
+                    '''
+                }
+            }
+        }
+
+        stage('Quality Gate') {
+            steps {
+                timeout(time: 5, unit: 'MINUTES') {
+                    waitForQualityGate abortPipeline: true
+                }
+            }
+        }
+
+        stage('Artifact') {
+            steps {
+                nexusArtifactUploader(
+                    artifacts: [[
+                        artifactId: 'vprofile',
+                        classifier: '',
+                        file: 'target/vprofile-v2.war',
+                        type: 'war'
+                    ]],
+                    credentialsId: 'mynexus',
+                    groupId: 'com.visualpathit',
+                    nexusUrl: '13.201.166.28:8081',
+                    nexusVersion: 'nexus3',
+                    protocol: 'http',
+                    repository: 'myrepo',
+                    version: 'v2'
+                )
+            }
+        }
+
+        stage('Prepare Docker App') {
+            steps {
+                sh '''
+                    test -d target
+                    test -d Docker-app
+                    rm -rf Docker-app/target
+                    cp -r target Docker-app/
+                '''
+            }
+        }
+
+        stage('Docker Build - Database') {
+            steps {
+                sh '''
+                    docker build --pull --no-cache\
+                        -t ${DOCKER_IMAGE}:dbimage \
+                        Docker-db
+                '''
+            }
+        }
+
+        stage('Docker Build - Application') {
+            steps {
+                sh '''
+                    docker build \
+                        -t ${DOCKER_IMAGE}:appimage \
+                        Docker-app
+                '''
+            }
+        }
+
+        stage('Trivy Scan - Database') {
+            steps {
+                sh '''
+                    trivy image \
+                        --severity HIGH,CRITICAL \
+                        --exit-code 0 \
+                        ${DOCKER_IMAGE}:dbimage
+                '''
+            }
+        }
+
+        stage('Trivy Scan - Application') {
+            steps {
+                sh '''
+                    trivy image \
+                        --severity HIGH,CRITICAL \
+                        --exit-code 0 \
+                        ${DOCKER_IMAGE}:appimage
+                '''
+            }
+        }
+
+        stage('Docker Image Push') {
+            steps {
+                script {
+                    withDockerRegistry(
+                        credentialsId: 'mydocker',
+                        url: 'https://index.docker.io/v1/'
+                    ) {
+                        sh '''
+                            docker tag ${DOCKER_IMAGE}:dbimage \
+                                ${DOCKER_IMAGE}:dbimage-${BUILD_NUMBER}
+
+                            docker tag ${DOCKER_IMAGE}:appimage \
+                                ${DOCKER_IMAGE}:appimage-${BUILD_NUMBER}
+
+                            docker push ${DOCKER_IMAGE}:dbimage
+                            docker push ${DOCKER_IMAGE}:appimage
+
+                            docker push ${DOCKER_IMAGE}:dbimage-${BUILD_NUMBER}
+                            docker push ${DOCKER_IMAGE}:appimage-${BUILD_NUMBER}
+                        '''
+                    }
+                }
+            }
+        }
+    }
+
+    post {
+        success {
+            echo 'Pipeline completed successfully!'
+        }
+
+        failure {
+            echo 'Pipeline failed. Check the stage logs for details.'
+        }
+
+        always {
+            echo 'Jenkins pipeline execution finished.'
+        }
+    }
+}
